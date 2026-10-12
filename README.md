@@ -312,6 +312,69 @@ terraform output -raw url_frontend
 
 ## Fase 5. El estado vive afuera
 
+### Evidencia 5
+
+Para ver el escalado se bajó a propósito la concurrencia del backend (`max_instance_request_concurrency = 5` en el `template` del servicio, con `max_instance_count = 3`) y se generó carga con `hey` el 12 de octubre de 2026, entre las 5:14 y las 5:16 p. m. (UTC-5).
+
+**5.1** Resumen de `hey`: 30 s con 15 conexiones simultáneas, 6.198 peticiones, todas con código 200, a unas 206 peticiones por segundo.
+
+![Evidencia 5.1](<Evidencias/Evidencia 5/Evidencia 5.1.png>)
+
+**5.2** Quince peticiones consecutivas con `curl` mientras corría la carga: respondieron dos instancias distintas (`950b4e` y `994d01`) y devolvieron los mismos mensajes.
+
+![Evidencia 5.2](<Evidencias/Evidencia 5/Evidencia 5.2.png>)
+
+**5.3** Gráfica de *Instance Count* del backend en Cloud Monitoring: de 1 a 3 instancias activas durante la prueba, que es el máximo configurado.
+
+![Evidencia 5.3](<Evidencias/Evidencia 5/Evidencia 5.3.png>)
+
+**5.4** Segunda prueba de carga, repetida más tarde con los mismos parámetros (30 s y 15 conexiones), después de quitar la línea de concurrencia de `main.tf` y volver a aplicar. **Ojo:** esta prueba **no** corrió con la concurrencia por defecto, como se creyó en un principio; ver la nota debajo de la tabla.
+
+![Evidencia 5.4](<Evidencias/Evidencia 5/Evidencia 5.4.png>)
+
+| | Primera prueba (5.1), instancias recién creadas | Segunda prueba (5.4), instancias ya calientes |
+|---|---|---|
+| Peticiones | 6.198 | 7.285 |
+| Peticiones por segundo | 206 | 242 |
+| Tiempo promedio | 72,7 ms | 61,8 ms |
+| Respuesta más lenta | 6,56 s | 0,36 s |
+| Código 200 | 6.198 | 7.285 |
+
+**Nota importante sobre la concurrencia.** Al ejecutar `terraform destroy` (fase 6), el plan mostró que el servicio del backend seguía teniendo `max_instance_request_concurrency = 5`. Es decir, quitar esa línea de `main.tf` y volver a aplicar **no** restablece el valor en un servicio que ya existe (el atributo es opcional y calculado: si no aparece en la configuración, Terraform conserva el valor que ya tiene el servicio). Por eso las dos pruebas, 5.1 y 5.4, corrieron con concurrencia 5, y la diferencia entre ellas no se debe al cambio de concurrencia. La explicación más probable de que en la segunda no haya cola lenta es que las 3 instancias ya estaban calientes tras la primera prueba. El servicio recreado en la fase 6 sí nace con la concurrencia por defecto, porque la línea ya no está en el código.
+
+### Qué se observa
+
+- Cualquier instancia puede atender cualquier petición porque los mensajes viven en Firestore y no en la memoria del backend. Esa es la condición para poder escalar horizontalmente.
+- Con 15 conexiones simultáneas y concurrencia 5, Cloud Run pasó de 1 a 3 instancias, el tope del servicio.
+- Las pocas respuestas lentas del histograma (hasta 6,5 s, cuatro peticiones) probablemente corresponden al arranque de instancias nuevas.
+- En la segunda prueba (5.4) no aparece esa cola de respuestas lentas: la más lenta fue de 0,36 s. Como ambas corrieron con concurrencia 5 (ver la nota anterior), la diferencia no es atribuible al cambio de concurrencia; es coherente con instancias ya calientes, pero no se comprobó cuántas atendieron esa prueba.
+
+### Lecturas de Firestore durante la prueba
+
+Cada `GET /mensajes` lee un documento por mensaje devuelto. Con 2 mensajes en la base (la respuesta mide 133 bytes), las 6.198 peticiones fueron unas **12.400 lecturas**, alrededor del 25 % de la cuota gratuita diaria de 50.000. La segunda prueba (7.285 peticiones) sumó otras ~14.570, de modo que ese día se llevaron ~27.000 lecturas solo en las pruebas de carga. Estas cifras entran en el cálculo de costos de la sección de preguntas.
+
+### Comandos ejecutados
+
+```bash
+# con max_instance_request_concurrency = 5 aplicado (terraform apply en infra/)
+B=$(terraform -chdir=infra output -raw url_backend)
+hey -z 30s -c 15 $B/mensajes
+
+# en otra pestaña, mientras corre la anterior
+B=$(terraform -chdir=infra output -raw url_backend)
+for i in $(seq 15); do curl -s $B/mensajes | cut -c1-30; done
+```
+
+Al terminar se quitó la línea de la concurrencia de `main.tf` y se volvió a aplicar (`terraform apply`), con la intención de que el backend recuperara la concurrencia por defecto (80). Como se explica en la nota de la evidencia 5.4, eso no la restableció en el servicio existente.
+
+Después se repitió la prueba de carga (evidencia 5.4, también con concurrencia 5):
+
+```bash
+B=$(terraform -chdir=infra output -raw url_backend)
+hey -z 30s -c 15 $B/mensajes
+```
+
+
 ## Fase 6. Reto
 
 ### Decisiones
