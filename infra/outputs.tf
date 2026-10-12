@@ -9,3 +9,8 @@ output "url_backend" {
 output "url_frontend" {
   value = google_cloud_run_v2_service.frontend.uri
 }
+
+output "origen_frontend" {
+  description = "Origen del frontend calculado a partir del numero de proyecto; debe coincidir con una URL real del servicio"
+  value       = local.origen_frontend
+}

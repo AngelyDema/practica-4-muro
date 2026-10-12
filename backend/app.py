@@ -8,6 +8,7 @@ app = Flask(__name__)
 db = firestore.Client(database=os.environ.get("BASE_DATOS", "(default)"))
 INSTANCIA = uuid.uuid4().hex[:6]
 REACCIONES = ("me_gusta", "corazon")
+ORIGENES_PERMITIDOS = [o.strip() for o in os.environ.get("ORIGEN_PERMITIDO", "*").split(",") if o.strip()]
 
 # Copia en memoria del listado: varias pestañas dentro de la misma ventana de tiempo
 # comparten una sola lectura a Firestore. Cada instancia tiene la suya.
@@ -21,9 +22,19 @@ def _invalidar_cache():
 
 @app.after_request
 def permitir_navegador(respuesta):
-    respuesta.headers["Access-Control-Allow-Origin"] = os.environ.get("ORIGEN_PERMITIDO", "*")
-    respuesta.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    respuesta.headers["Access-Control-Allow-Methods"] = "GET, POST"
+    # CORS: solo los origenes de ORIGEN_PERMITIDO (lista separada por comas) pueden leer
+    # las respuestas desde un navegador. Sin la variable queda "*" (desarrollo local).
+    # Es una regla del navegador, no autenticacion: curl y otros clientes no la aplican.
+    origen = request.headers.get("Origin")
+    if "*" in ORIGENES_PERMITIDOS:
+        respuesta.headers["Access-Control-Allow-Origin"] = "*"
+    else:
+        respuesta.headers.add("Vary", "Origin")
+        if origen in ORIGENES_PERMITIDOS:
+            respuesta.headers["Access-Control-Allow-Origin"] = origen
+    if "Access-Control-Allow-Origin" in respuesta.headers:
+        respuesta.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        respuesta.headers["Access-Control-Allow-Methods"] = "GET, POST"
     return respuesta
 
 

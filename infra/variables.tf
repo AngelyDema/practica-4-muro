@@ -23,6 +23,12 @@ variable "imagen_backend" {
   description = "Ruta completa de la imagen del backend, con etiqueta"
 }
 
+variable "origen_frontend_alterno" {
+  type        = string
+  default     = ""
+  description = "Segundo origen permitido por CORS, para la URL antigua con hash del frontend (no se puede calcular)"
+}
+
 variable "imagen_frontend" {
   type        = string
   description = "Ruta completa de la imagen del frontend, con etiqueta"

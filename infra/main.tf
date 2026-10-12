@@ -37,6 +37,19 @@ resource "google_project_iam_member" "backend_firestore" {
   member  = "serviceAccount:${google_service_account.backend.email}"
 }
 
+# Cloud Run da a cada servicio una URL que se puede calcular sin crearlo:
+#   https://<servicio>-<numero de proyecto>.<region>.run.app
+# Asi el backend conoce el origen del frontend sin referenciar al recurso del frontend,
+# y se evita el ciclo backend <-> frontend (el frontend ya depende del backend por BACKEND_URL).
+data "google_project" "actual" {
+  project_id = var.proyecto
+  depends_on = [google_project_service.apis]
+}
+
+locals {
+  origen_frontend = "https://${var.prefijo}-frontend-${data.google_project.actual.number}.${var.region}.run.app"
+}
+
 resource "google_cloud_run_v2_service" "backend" {
   name                = "${var.prefijo}-backend"
   location            = var.region
@@ -50,6 +63,10 @@ resource "google_cloud_run_v2_service" "backend" {
       env {
         name  = "BASE_DATOS"
         value = google_firestore_database.db.name
+      }
+      env {
+        name  = "ORIGEN_PERMITIDO"
+        value = join(",", compact([local.origen_frontend, var.origen_frontend_alterno]))
       }
     }
     scaling {
