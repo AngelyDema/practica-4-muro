@@ -8,7 +8,21 @@
 
 ```mermaid
 flowchart LR
+  %% Se completa en las fases 3 y 4 (backend, frontend y sus conexiones)
   navegador --> frontend
+
+  subgraph terraform["Terraform (infra/)"]
+    apis["google_project_service.apis"]
+    registro["google_artifact_registry_repository.imagenes"]
+    db["google_firestore_database.db"]
+    sa["google_service_account.backend"]
+    iam["google_project_iam_member.backend_firestore<br/>roles/datastore.user"]
+  end
+
+  apis -. depends_on .-> registro
+  apis -. depends_on .-> db
+  apis -. depends_on .-> sa
+  sa -- "email" --> iam
 ```
 
 ## Fase 0. Preparación
@@ -124,6 +138,86 @@ docker stop front
 Para la evidencia 1.2 se cambió una palabra del comentario de la primera línea de `backend/app.py` y se volvió a ejecutar `docker build -t backend:local backend`.
 
 ## Fase 2. Los cimientos
+
+### Evidencia 2
+
+**2.1** Repositorio `pinoavila-imagenes` en Artifact Registry (formato Docker) con las imágenes `backend` y `frontend`.
+
+![Evidencia 2.1](<Evidencias/Evidencia 2/Evidencia 2.1.png>)
+
+**2.2** Base de datos `pinoavila-db` en Firestore, vacía (la colección `mensajes` aparece con el primer documento, en la fase 3).
+
+![Evidencia 2.2](<Evidencias/Evidencia 2/Evidencia 2.2.png>)
+
+**2.3** Cuenta de servicio `pinoavila-backend@nube-practica-1-507220.iam.gserviceaccount.com` en IAM, con el rol *Usuario de Cloud Datastore* (`roles/datastore.user`) y ningún otro.
+
+![Evidencia 2.3](<Evidencias/Evidencia 2/Evidencia 2.3.png>)
+
+### Comandos ejecutados
+
+Paso previo, una sola vez:
+
+```bash
+gcloud services enable cloudresourcemanager.googleapis.com --project nube-practica-1-507220
+```
+
+Infraestructura (desde `infra/`):
+
+```bash
+terraform apply
+```
+
+```text
+Plan: 9 to add, 0 to change, 4 to destroy.
+google_project_service.apis["cloudresourcemanager.googleapis.com"]: Creating...
+google_service_account.backend: Creating...
+google_firestore_database.db: Creating...
+google_artifact_registry_repository.imagenes: Creating...
+google_firestore_database.db: Creation complete after 1s [id=projects/nube-practica-1-507220/databases/pinoavila-db]
+google_artifact_registry_repository.imagenes: Creation complete after 11s [id=projects/nube-practica-1-507220/locations/us-central1/repositories/pinoavila-imagenes]
+google_service_account.backend: Creation complete after 15s [id=projects/nube-practica-1-507220/serviceAccounts/pinoavila-backend@nube-practica-1-507220.iam.gserviceaccount.com]
+google_project_iam_member.backend_firestore: Creation complete after 8s [id=nube-practica-1-507220/roles/datastore.user/serviceAccount:pinoavila-backend@nube-practica-1-507220.iam.gserviceaccount.com]
+
+Apply complete! Resources: 9 added, 0 changed, 4 destroyed.
+
+Outputs:
+
+ruta_registro = "us-central1-docker.pkg.dev/nube-practica-1-507220/pinoavila-imagenes"
+```
+
+Imágenes (desde la raíz del repositorio):
+
+```bash
+RUTA=$(terraform -chdir=infra output -raw ruta_registro)
+gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+docker build -t $RUTA/backend:v1 backend
+docker build -t $RUTA/frontend:v1 frontend
+docker push $RUTA/backend:v1
+docker push $RUTA/frontend:v1
+echo $RUTA
+```
+
+Salida del `docker push` del backend (intento que tuvo éxito):
+
+```text
+The push refers to repository [us-central1-docker.pkg.dev/nube-practica-1-507220/pinoavila-imagenes/backend]
+a5883d972f3b: Layer already exists
+be4e6c90cb42: Pushed
+ecc510c1e359: Layer already exists
+44136fa355b3: Already exists
+6aaf5b0aae75: Layer already exists
+bb8166eb34e6: Layer already exists
+97c02ef8708c: Layer already exists
+a61cfe11f33a: Pushed
+64a61c618af3: Pushed
+5c0f5d0bc546: Pushed
+v1: digest: sha256:452aef807e5a102ee058101da6e0be0ad548731091fb759ad54cd0dad5f9298f size: 856
+```
+
+### Incidentes y cómo se resolvieron
+
+- **API Cloud Resource Manager deshabilitada.** El primer `terraform apply` falló con `SERVICE_DISABLED` / `accessNotConfigured`. Terraform necesita esa API incluso para administrar las demás, por lo que no se puede habilitar solo desde Terraform. Se añadió `cloudresourcemanager.googleapis.com` a la lista de APIs de `main.tf` (para que quede en el estado) y se habilitó una sola vez a mano antes de repetir el `apply`.
+- **`docker push` del backend con `connection refused`.** Falló de forma intermitente al consultar las capas en `us-central1-docker.pkg.dev` (IPs distintas, no es un problema de permisos). Se resolvió reintentando en un bucle: tuvo éxito en el intento 5.
 
 ## Fase 3. El backend
 
