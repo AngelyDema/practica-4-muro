@@ -80,6 +80,33 @@
   }
   .autor { font-weight: 650; margin-bottom: .15rem; }
   .cuerpo { line-height: 1.4; overflow-wrap: anywhere; }
+  li { position: relative; touch-action: manipulation; }
+  .reacciones { display: flex; gap: .4rem; margin-top: .5rem; }
+  .reaccion {
+    width: auto;
+    padding: .25rem .65rem;
+    font-size: .85rem;
+    font-weight: 500;
+    background: #fbfaf9;
+    color: var(--texto);
+    border: 1px solid var(--borde);
+    border-radius: 999px;
+  }
+  .reaccion:hover { border-color: var(--acento); }
+  .corazon-flotante {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    font-size: 3rem;
+    pointer-events: none;
+    transform: translate(-50%, -50%) scale(0);
+    animation: latido .7s ease-out forwards;
+  }
+  @keyframes latido {
+    0%   { transform: translate(-50%, -50%) scale(0);   opacity: 1; }
+    40%  { transform: translate(-50%, -50%) scale(1.3); opacity: 1; }
+    100% { transform: translate(-50%, -75%) scale(1);   opacity: 0; }
+  }
 </style>
 </head>
 <body>
@@ -108,6 +135,47 @@ function colorDe(nombre) {
   return COLORES[suma % COLORES.length];
 }
 
+const REACCIONES = [["me_gusta", "👍"], ["corazon", "❤️"]];
+let ultimoToque = { id: null, t: 0 };
+
+async function reaccionar(id, tipo) {
+  try {
+    await fetch(API + "/mensajes/" + id + "/reacciones", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tipo })
+    });
+    await cargar();
+  } catch (error) {
+    document.getElementById("estado").textContent = "No se pudo reaccionar: " + error;
+  }
+}
+
+function lanzarCorazon(li) {
+  const corazon = document.createElement("span");
+  corazon.className = "corazon-flotante";
+  corazon.textContent = "❤️";
+  li.append(corazon);
+  setTimeout(() => corazon.remove(), 800);
+}
+
+// Dos toques seguidos sobre el mismo mensaje (a menos de 350 ms) dan un corazón.
+// Se mide a mano porque el evento dblclick no es fiable en todos los teléfonos.
+function activarDobleToque(li, id) {
+  li.addEventListener("mousedown", (e) => { if (e.detail > 1) e.preventDefault(); });
+  li.addEventListener("click", (e) => {
+    if (e.target.closest("button")) return;
+    const ahora = Date.now();
+    if (ultimoToque.id === id && ahora - ultimoToque.t < 350) {
+      ultimoToque = { id: null, t: 0 };
+      lanzarCorazon(li);
+      reaccionar(id, "corazon");
+    } else {
+      ultimoToque = { id, t: ahora };
+    }
+  });
+}
+
 async function cargar() {
   try {
     const respuesta = await fetch(API + "/mensajes");
@@ -127,8 +195,18 @@ async function cargar() {
       const cuerpo = document.createElement("div");
       cuerpo.className = "cuerpo";
       cuerpo.textContent = m.texto;
-      contenido.append(autor, cuerpo);
+      const reacciones = document.createElement("div");
+      reacciones.className = "reacciones";
+      for (const [tipo, emoji] of REACCIONES) {
+        const boton = document.createElement("button");
+        boton.className = "reaccion";
+        boton.textContent = emoji + " " + ((m.reacciones || {})[tipo] || 0);
+        boton.onclick = () => reaccionar(m.id, tipo);
+        reacciones.append(boton);
+      }
+      contenido.append(autor, cuerpo, reacciones);
       li.append(inicial, contenido);
+      activarDobleToque(li, m.id);
       lista.append(li);
     }
     document.getElementById("estado").textContent = "Respondió la instancia " + datos.instancia;
