@@ -10,7 +10,7 @@
 flowchart LR
   navegador["navegador"]
   navegador -- "abre la página" --> frontend
-  navegador -. "fetch /mensajes (CORS)" .-> backend
+  navegador -. "fetch /mensajes (solo desde origen permitido)" .-> backend
 
   subgraph terraform["Terraform (infra/)"]
     apis["google_project_service.apis"]
@@ -20,6 +20,9 @@ flowchart LR
     sa_b["google_service_account.backend"]
     iam_b["google_project_iam_member.backend_firestore<br/>roles/datastore.user"]
     img_b["var.imagen_backend<br/>terraform.tfvars"]
+    proyecto["data.google_project.actual<br/>número del proyecto"]
+    origen["local.origen_frontend<br/>URL determinista del frontend"]
+    alterno["var.origen_frontend_alterno<br/>terraform.tfvars"]
     backend["google_cloud_run_v2_service.backend<br/>max_instance_count = 3"]
     pub_b["google_cloud_run_v2_service_iam_member.backend_publico<br/>roles/run.invoker a allUsers"]
 
@@ -40,6 +43,9 @@ flowchart LR
   sa_b -- "email (service_account)" --> backend
   db -- "name (BASE_DATOS)" --> backend
   img_b -- "image" --> backend
+  proyecto -- "number" --> origen
+  origen -- "ORIGEN_PERMITIDO" --> backend
+  alterno -- "ORIGEN_PERMITIDO" --> backend
   backend -- "name, location" --> pub_b
 
   sa_f -- "email (service_account)" --> frontend
@@ -426,5 +432,37 @@ Se mide a mano (dos toques sobre el mismo mensaje a menos de 350 ms) en vez de u
 **Límite conocido**
 
 No hay control por persona: cualquiera puede reaccionar varias veces al mismo mensaje. Se dejó así por simplicidad, porque limitarlo de verdad exigiría identificar a cada visitante.
+
+#### Cómo se bajan las lecturas de Firestore
+
+La página consultaba cada 5 s aunque nadie estuviera mirándola, y cada consulta lee un documento por mensaje. Se hicieron dos cambios, sin tocar el intervalo de 5 s para no perder la sensación de tiempo real:
+
+- **Página:** solo consulta mientras la pestaña está visible (`document.hidden`) y recarga al instante al volver a verla. Una pestaña olvidada en segundo plano deja de gastar lecturas.
+- **Backend:** `GET /mensajes` guarda el resultado 2 s en memoria de la instancia. Dentro de esa ventana, las consultas comparten una sola lectura a Firestore. Publicar o reaccionar invalida la copia, y la página pide `?fresco=1` tras sus propias acciones para ver al instante lo que acaba de hacer.
+
+**Qué pierde el usuario a cambio:** un mensaje de otra persona puede tardar hasta ~7 s en verse (5 s del refresco y 2 s de la copia), en vez de ~5 s. Lo propio se ve al instante. Como la copia (2 s) dura menos que el intervalo de refresco (5 s), una misma persona nunca ve un mensaje aparecer y desaparecer al caer en instancias distintas.
+
+**Estimación (calculada, no medida):** una pestaña visible hace 12 consultas por minuto, es decir 12 × (mensajes en el muro) lecturas por minuto: con 2 mensajes son unas 1.440 por hora, y con 20 mensajes, 14.400. Con la pestaña oculta el cambio la lleva a 0. La copia pone un techo al gasto del backend independiente del número de personas: como máximo una lectura del listado cada 2 s por instancia. Con 1 o 2 pestañas casi no se nota; su efecto aparece cuando hay varias personas viendo el muro a la vez. No se hizo una medición con la métrica de Firestore, por lo que estas cifras son una estimación por cálculo.
+
+#### Cómo se rompe el ciclo de CORS
+
+Para que el backend acepte peticiones de navegador solo desde el frontend, necesita conocer su origen. Pero el frontend ya depende del backend (recibe su URL por referencia en `BACKEND_URL`), y Terraform no acepta que A dependa de B y B de A.
+
+**Solución:** la URL de un servicio de Cloud Run se puede calcular sin haberlo creado: `https://<servicio>-<número de proyecto>.<región>.run.app`. El backend recibe en `ORIGEN_PERMITIDO` esa URL, armada en un `local` con el prefijo, la región y el número del proyecto (`data "google_project"`), sin referenciar el recurso del frontend. El grafo queda `frontend → backend → (datos conocidos)` y no hay ciclo. Se comprobó con `terraform graph`: el backend no depende del frontend.
+
+El backend (`app.py`) acepta una lista de orígenes separada por comas. Si el `Origin` de la petición está en la lista, lo devuelve en `Access-Control-Allow-Origin` (con `Vary: Origin`). Si no, no envía ninguna cabecera CORS y el navegador bloquea la respuesta. Sin la variable, queda `*`, para desarrollo local.
+
+**Por qué funciona:** la URL se calcula con datos conocidos de antemano, así que el backend deja de *depender* del frontend; solo necesita saber cómo se llamará.
+
+**Qué la haría fallar:**
+
+- Que alguien abra el muro por un origen que no está en la lista (un dominio propio, o el mismo código desplegado en otro proyecto).
+- Que Google cambie el formato de las URLs de Cloud Run.
+- Que se renombre el servicio del frontend sin actualizar el prefijo.
+- La URL antigua del muro (con hash) no se puede calcular, así que se agregó como segundo origen en `terraform.tfvars` (`origen_frontend_alterno`). Ambas URLs sirven el mismo servicio.
+
+**Lo que no es:** CORS no es autenticación. Solo impide que *otras páginas web* usen la API desde un navegador. `curl` y cualquier cliente que no sea un navegador siguen pudiendo llamarla, y el backend sigue siendo público.
+
+**Alternativa descartada:** que el frontend haga de proxy y el navegador nunca hable con el backend. Elimina el CORS de raíz, pero obliga a reescribir `server.py` y la página para el mismo resultado.
 
 ### Preguntas
