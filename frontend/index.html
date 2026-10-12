@@ -145,7 +145,7 @@ async function reaccionar(id, tipo) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tipo })
     });
-    await cargar();
+    await cargar(true);
   } catch (error) {
     document.getElementById("estado").textContent = "No se pudo reaccionar: " + error;
   }
@@ -176,9 +176,11 @@ function activarDobleToque(li, id) {
   });
 }
 
-async function cargar() {
+// fresco = true se salta la copia del backend: se usa tras las acciones propias,
+// para ver al instante lo que uno acaba de publicar o reaccionar.
+async function cargar(fresco = false) {
   try {
-    const respuesta = await fetch(API + "/mensajes");
+    const respuesta = await fetch(API + "/mensajes" + (fresco ? "?fresco=1" : ""));
     const datos = await respuesta.json();
     const lista = document.getElementById("lista");
     lista.innerHTML = "";
@@ -228,14 +230,18 @@ document.getElementById("enviar").onclick = async () => {
       body: JSON.stringify({ autor, texto })
     });
     document.getElementById("texto").value = "";
-    await cargar();
+    await cargar(true);
   } finally {
     boton.disabled = false;
   }
 };
 
 cargar();
-setInterval(cargar, 5000);
+
+// Cada 5 s, pero solo con la pestaña visible: una pestaña olvidada en segundo plano
+// no gasta lecturas. Al volver a verla se recarga al instante.
+setInterval(() => { if (!document.hidden) cargar(); }, 5000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) cargar(); });
 </script>
 </body>
 </html>

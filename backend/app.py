@@ -1,5 +1,5 @@
 # API del muro de mensajes: listar, publicar y reaccionar, guardando en Firestore.
-import os, uuid
+import os, time, uuid
 from flask import Flask, request, jsonify
 from google.api_core.exceptions import InvalidArgument, NotFound
 from google.cloud import firestore
@@ -8,6 +8,15 @@ app = Flask(__name__)
 db = firestore.Client(database=os.environ.get("BASE_DATOS", "(default)"))
 INSTANCIA = uuid.uuid4().hex[:6]
 REACCIONES = ("me_gusta", "corazon")
+
+# Copia en memoria del listado: varias pestañas dentro de la misma ventana de tiempo
+# comparten una sola lectura a Firestore. Cada instancia tiene la suya.
+CACHE_SEGUNDOS = float(os.environ.get("CACHE_SEGUNDOS", "2"))
+_cache = {"hasta": 0.0, "mensajes": None}
+
+
+def _invalidar_cache():
+    _cache["mensajes"] = None
 
 
 @app.after_request
@@ -23,8 +32,7 @@ def salud():
     return "ok"
 
 
-@app.get("/mensajes")
-def listar():
+def _leer_mensajes():
     consulta = (db.collection("mensajes")
                   .order_by("creado", direction=firestore.Query.DESCENDING)
                   .limit(20))
@@ -38,7 +46,17 @@ def listar():
             "texto": datos.get("texto"),
             "reacciones": {tipo: int(guardadas.get(tipo, 0)) for tipo in REACCIONES},
         })
-    return jsonify(instancia=INSTANCIA, mensajes=mensajes)
+    return mensajes
+
+
+@app.get("/mensajes")
+def listar():
+    ahora = time.monotonic()
+    fresco = request.args.get("fresco") == "1"  # lo usa la página tras sus propias acciones
+    if fresco or _cache["mensajes"] is None or ahora >= _cache["hasta"]:
+        _cache["mensajes"] = _leer_mensajes()
+        _cache["hasta"] = ahora + CACHE_SEGUNDOS
+    return jsonify(instancia=INSTANCIA, mensajes=_cache["mensajes"])
 
 
 @app.post("/mensajes")
@@ -53,6 +71,7 @@ def crear():
         "texto": texto,
         "creado": firestore.SERVER_TIMESTAMP,
     })
+    _invalidar_cache()
     return jsonify(ok=True, instancia=INSTANCIA), 201
 
 
@@ -70,4 +89,5 @@ def reaccionar(id_mensaje):
         return jsonify(error="el mensaje no existe"), 404
     except InvalidArgument:
         return jsonify(error="id de mensaje no valido"), 400
+    _invalidar_cache()
     return jsonify(ok=True, instancia=INSTANCIA)
