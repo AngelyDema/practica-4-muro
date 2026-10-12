@@ -8,8 +8,9 @@
 
 ```mermaid
 flowchart LR
-  %% Se completa en las fases 3 y 4 (backend, frontend y sus conexiones)
+  %% Se completa en la fase 4 (frontend y su conexión con el backend)
   navegador --> frontend
+  navegador -. "API pública (curl)" .-> backend
 
   subgraph terraform["Terraform (infra/)"]
     apis["google_project_service.apis"]
@@ -17,12 +18,20 @@ flowchart LR
     db["google_firestore_database.db"]
     sa["google_service_account.backend"]
     iam["google_project_iam_member.backend_firestore<br/>roles/datastore.user"]
+    backend["google_cloud_run_v2_service.backend<br/>max_instance_count = 3"]
+    publico["google_cloud_run_v2_service_iam_member.backend_publico<br/>roles/run.invoker a allUsers"]
+    imagen["var.imagen_backend<br/>terraform.tfvars"]
   end
 
   apis -. depends_on .-> registro
   apis -. depends_on .-> db
   apis -. depends_on .-> sa
+  apis -. depends_on .-> backend
   sa -- "email" --> iam
+  sa -- "email (service_account)" --> backend
+  db -- "name (BASE_DATOS)" --> backend
+  imagen -- "image" --> backend
+  backend -- "name, location" --> publico
 ```
 
 ## Fase 0. Preparación
@@ -220,6 +229,43 @@ v1: digest: sha256:452aef807e5a102ee058101da6e0be0ad548731091fb759ad54cd0dad5f92
 - **`docker push` del backend con `connection refused`.** Falló de forma intermitente al consultar las capas en `us-central1-docker.pkg.dev` (IPs distintas, no es un problema de permisos). Se resolvió reintentando en un bucle: tuvo éxito en el intento 5.
 
 ## Fase 3. El backend
+
+### Evidencia 3
+
+**3.1** Prueba de la API del backend en Cloud Run: un `POST /mensajes` que guarda el mensaje y un `GET /mensajes` que lo devuelve.
+
+![Evidencia 3.1](<Evidencias/Evidencia 3/Evidencia 3.1.png>)
+
+**3.2** El documento en la consola de Firestore, dentro de la colección `mensajes`, que se creó sola con el primer mensaje.
+
+![Evidencia 3.2](<Evidencias/Evidencia 3/Evidencia 3.2.png>)
+
+### Cambios en la infraestructura
+
+- `variables.tf`: nueva variable `imagen_backend`; su valor va en `terraform.tfvars`.
+- `main.tf`: `google_cloud_run_v2_service.backend`, que corre con la cuenta de servicio `google_service_account.backend.email`, recibe el nombre de la base por referencia (`google_firestore_database.db.name`) en la variable de entorno `BASE_DATOS`, y se limita a 3 instancias.
+- `main.tf`: `google_cloud_run_v2_service_iam_member.backend_publico`, que da `roles/run.invoker` a `allUsers` para que la API sea pública.
+- `outputs.tf`: salida `url_backend` con el atributo `uri` del servicio.
+
+### Comandos ejecutados
+
+```bash
+cd infra
+terraform apply
+```
+
+```bash
+B=$(terraform -chdir=infra output -raw url_backend)
+curl -s -X POST $B/mensajes -H "Content-Type: application/json" \
+  -d '{"autor": "Jhan", "texto": "primer mensaje desde Cloud Run"}'
+curl -s $B/mensajes
+```
+
+```text
+{"instancia":"f9cda9","ok":true}
+{"instancia":"f9cda9","mensajes":[{"autor":"Jhan","texto":"primer mensaje desde Cloud Run"}]}
+```
+
 
 ## Fase 4. El frontend, conectado
 
