@@ -2,36 +2,52 @@
 
 **Equipo:** Angely Sofia Pino (1152315), Jhan Ávila Torres (1152490)  
 **Proyecto de Google Cloud:** `nube-practica-1-507220`  
-**URL del muro:**
+**URL del muro:** https://pinoavila-frontend-q7vhrsuaoa-uc.a.run.app/
 
 ## Diagrama
 
 ```mermaid
 flowchart LR
-  %% Se completa en la fase 4 (frontend y su conexión con el backend)
-  navegador --> frontend
-  navegador -. "API pública (curl)" .-> backend
+  navegador["navegador"]
+  navegador -- "abre la página" --> frontend
+  navegador -. "fetch /mensajes (CORS)" .-> backend
 
   subgraph terraform["Terraform (infra/)"]
     apis["google_project_service.apis"]
     registro["google_artifact_registry_repository.imagenes"]
     db["google_firestore_database.db"]
-    sa["google_service_account.backend"]
-    iam["google_project_iam_member.backend_firestore<br/>roles/datastore.user"]
+
+    sa_b["google_service_account.backend"]
+    iam_b["google_project_iam_member.backend_firestore<br/>roles/datastore.user"]
+    img_b["var.imagen_backend<br/>terraform.tfvars"]
     backend["google_cloud_run_v2_service.backend<br/>max_instance_count = 3"]
-    publico["google_cloud_run_v2_service_iam_member.backend_publico<br/>roles/run.invoker a allUsers"]
-    imagen["var.imagen_backend<br/>terraform.tfvars"]
+    pub_b["google_cloud_run_v2_service_iam_member.backend_publico<br/>roles/run.invoker a allUsers"]
+
+    sa_f["google_service_account.frontend<br/>sin roles"]
+    img_f["var.imagen_frontend<br/>terraform.tfvars"]
+    frontend["google_cloud_run_v2_service.frontend<br/>max_instance_count = 2"]
+    pub_f["google_cloud_run_v2_service_iam_member.frontend_publico<br/>roles/run.invoker a allUsers"]
   end
 
   apis -. depends_on .-> registro
   apis -. depends_on .-> db
-  apis -. depends_on .-> sa
+  apis -. depends_on .-> sa_b
+  apis -. depends_on .-> sa_f
   apis -. depends_on .-> backend
-  sa -- "email" --> iam
-  sa -- "email (service_account)" --> backend
+  apis -. depends_on .-> frontend
+
+  sa_b -- "email" --> iam_b
+  sa_b -- "email (service_account)" --> backend
   db -- "name (BASE_DATOS)" --> backend
-  imagen -- "image" --> backend
-  backend -- "name, location" --> publico
+  img_b -- "image" --> backend
+  backend -- "name, location" --> pub_b
+
+  sa_f -- "email (service_account)" --> frontend
+  backend -- "uri (BACKEND_URL)" --> frontend
+  img_f -- "image" --> frontend
+  frontend -- "name, location" --> pub_f
+
+  backend -- "lee y escribe mensajes" --> db
 ```
 
 ## Fase 0. Preparación
@@ -268,6 +284,31 @@ curl -s $B/mensajes
 
 
 ## Fase 4. El frontend, conectado
+
+### Evidencia 4
+
+El muro abierto en el teléfono. Se ven un mensaje escrito por Angely desde su propio dispositivo ("Hola Jhan") y el mensaje de Jhan de la fase 3.
+
+![Evidencia 4](<Evidencias/Evidencia 4/Evidencia 4.png>)
+
+### Cambios en la infraestructura
+
+- `variables.tf`: nueva variable `imagen_frontend`; su valor va en `terraform.tfvars`.
+- `main.tf`: `google_service_account.frontend`, una identidad propia para el frontend **sin ningún rol**: no necesita ninguno, y así no hereda los permisos de la cuenta por defecto del proyecto.
+- `main.tf`: `google_cloud_run_v2_service.frontend`, con `max_instance_count = 2`. Recibe la URL del backend **por referencia** en la variable de entorno `BACKEND_URL` (`google_cloud_run_v2_service.backend.uri`), de modo que Terraform crea primero el backend y el frontend nunca queda apuntando a una URL vieja.
+- `main.tf`: `google_cloud_run_v2_service_iam_member.frontend_publico`, con `roles/run.invoker` para `allUsers`.
+- `outputs.tf`: salida `url_frontend`.
+
+La imagen del frontend no sabe nada del backend: es la misma para cualquier entorno, y lo que cambia entra por la variable de entorno.
+
+### Comandos ejecutados
+
+```bash
+cd infra
+terraform apply
+terraform output -raw url_frontend
+```
+
 
 ## Fase 5. El estado vive afuera
 
