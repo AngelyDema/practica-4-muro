@@ -377,6 +377,54 @@ hey -z 30s -c 15 $B/mensajes
 
 ## Fase 6. Reto
 
+### Evidencia 6
+
+#### Requisito 1: funcionalidad nueva (reacciones)
+
+**6.1** El muro en la versión `v2`: cada mensaje muestra los botones 👍 y ❤️ con su contador. El mensaje de Angely tiene 4 y 6 reacciones.
+
+![Evidencia 6.1](<Evidencias/Evidencia 6/Evidencia 6.1.png>)
+
+**6.2** El mismo mensaje en Firestore: el documento guarda el mapa `reacciones` con `corazon: 6` y `me_gusta: 4`, los mismos valores que muestra la página.
+
+![Evidencia 6.2](<Evidencias/Evidencia 6/Evidencia 6.2.png>)
+
+Comandos ejecutados para publicar `v2` (en `terraform.tfvars` solo cambiaron las dos etiquetas, de `:v1` a `:v2`):
+
+```bash
+RUTA=$(terraform -chdir=infra output -raw ruta_registro)
+docker build -t $RUTA/backend:v2 backend
+docker build -t $RUTA/frontend:v2 frontend
+docker push $RUTA/backend:v2
+docker push $RUTA/frontend:v2
+cd infra && terraform apply
+```
+
 ### Decisiones
+
+#### La funcionalidad nueva: reacciones
+
+**Qué cambia en cada capa**
+
+- **Página (`frontend/index.html`):** cada tarjeta tiene dos botones, 👍 y ❤️, con su contador. Un doble toque sobre un mensaje da un corazón con una animación breve.
+- **API (`backend/app.py`):** `GET /mensajes` ahora devuelve también el `id` y las `reacciones` de cada mensaje. Hay un endpoint nuevo, `POST /mensajes/<id>/reacciones`, que recibe `{"tipo": "me_gusta" | "corazon"}`. Responde `400` si el tipo no está en la lista cerrada y `404` si el mensaje no existe.
+- **Firestore:** cada documento de `mensajes` gana un mapa `reacciones` con un contador por tipo.
+
+**Cómo se guarda el dato nuevo**
+
+El contador vive en el mismo documento del mensaje, como un mapa `reacciones: { me_gusta: n, corazon: n }`, y se sube con `firestore.Increment(1)`. Las razones:
+
+- **Es atómico.** Con varias instancias del backend atendiendo a la vez (fase 5), dos reacciones simultáneas no se pisan, cosa que sí pasaría con leer el valor, sumarle uno y escribirlo.
+- **No agrega lecturas.** Al estar en el mismo documento, listar los mensajes sigue costando una lectura por mensaje; si fueran una subcolección, cada mensaje costaría lecturas extra.
+- **No requiere migración.** Los mensajes anteriores no tienen el campo; se leen como 0 y el mapa se crea con la primera reacción.
+- **Los tipos son una lista cerrada en el servidor** (`me_gusta`, `corazon`), para que nadie pueda escribir campos arbitrarios, y las claves son ASCII para que sean rutas de campo válidas.
+
+**El doble toque**
+
+Se mide a mano (dos toques sobre el mismo mensaje a menos de 350 ms) en vez de usar el evento `dblclick`, porque este último no es fiable en todos los teléfonos. Los clics sobre los botones no cuentan como doble toque, para no sumar una reacción de más.
+
+**Límite conocido**
+
+No hay control por persona: cualquiera puede reaccionar varias veces al mismo mensaje. Se dejó así por simplicidad, porque limitarlo de verdad exigiría identificar a cada visitante.
 
 ### Preguntas
