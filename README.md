@@ -53,6 +53,9 @@ flowchart LR
   img_f -- "image" --> frontend
   frontend -- "name, location" --> pub_f
 
+  registro -. "guarda las imágenes (se referencian por ruta)" .-> backend
+  registro -. "guarda las imágenes (se referencian por ruta)" .-> frontend
+  iam_b -. "autoriza a la cuenta del backend sobre" .-> db
   backend -- "lee y escribe mensajes" --> db
 ```
 
@@ -555,3 +558,28 @@ terraform -chdir=infra destroy           # borra todo, incluida la base y sus me
 - **Lo que se haría con más tiempo:** dividir `infra/` en dos carpetas, una con los cimientos (APIs, registro, base, cuentas) y otra con los servicios, y aplicarlas en orden con las imágenes en medio. Es la separación más limpia entre infraestructura y artefacto, y no usa `-target`, pero obliga a compartir valores entre dos estados y a reestructurar archivos que ya funcionan.
 
 ### Preguntas
+
+**1. ¿Por qué con `curl` la API funciona aunque falten las cabeceras de CORS, y desde la página no?**
+
+Porque CORS es una regla que aplica el navegador, no el servidor. El backend procesa la petición y responde igual en los dos casos: en la evidencia 6.3 se ve `net::ERR_FAILED 200 (OK)`, es decir, el servidor contestó 200. Lo que ocurre es que el navegador, al no encontrar en la respuesta un `Access-Control-Allow-Origin` que incluya el origen de la página, descarta el resultado y no se lo entrega al JavaScript; con un `POST` con JSON ni siquiera lo envía, porque antes hace una petición previa `OPTIONS` y, si el servidor no la autoriza, cancela. `curl` no es un navegador y no tiene ninguna política de mismo origen que aplicar: imprime lo que recibe, con o sin cabeceras (evidencia 6.4). La consecuencia es que CORS protege al usuario de que una página ajena use su navegador para leer una API, pero no protege a la API: cualquier cliente que no sea un navegador sigue pudiendo llamarla, así que no es autenticación.
+
+**2. Si le quitas el rol a la cuenta de servicio del backend, ¿qué deja de funcionar y dónde encontrarías el error?**
+
+Dejaría de funcionar todo lo que toca Firestore: listar mensajes, publicar y reaccionar. Firestore rechazaría cada operación con un error `403 PermissionDenied` (falta un permiso como `datastore.entities.list`). El backend no atrapa esa excepción, por lo que Flask responde `500` y la página muestra "No se pudo hablar con el backend". Lo que seguiría funcionando es el resto: el servicio de Cloud Run está vivo, la imagen arranca, `GET /` devuelve `ok` porque no usa Firestore y el frontend sigue cargando, ya que solo sirve HTML. El error no se ve en la página, sino en los registros del backend: en la consola, Cloud Run → `pinoavila-backend` → pestaña *Registros* (o `gcloud run services logs read pinoavila-backend --region us-central1`), donde aparece el *traceback* con `google.api_core.exceptions.PermissionDenied`. Para confirmar la causa se revisa IAM y se comprueba que la cuenta `pinoavila-backend@...` ya no tiene el rol *Usuario de Cloud Datastore*. Como pasó al otorgarlo, un cambio de rol puede tardar un minuto en surtir efecto, de modo que el fallo puede aparecer con algo de retraso.
+
+**3. ¿Cuánto cuesta tu muro un mes sin visitas, y cuánto si cien personas lo dejan abierto todo el día, antes y después de tu cambio del reto?**
+
+Sin visitas cuesta prácticamente nada: Cloud Run escala a cero instancias (no se cobra cómputo ni peticiones), la base ocupa unos pocos kilobytes frente al 1 GiB gratuito y no hay lecturas ni escrituras. Lo único que queda es el almacenamiento de las dos imágenes en Artifact Registry, que debería caer dentro de su capa gratuita. Con cien personas es otra historia. La cuenta, con los supuestos de abajo, sale así:
+
+| Escenario | Peticiones al día | Lecturas de Firestore al día | Costo mensual aproximado |
+|---|---|---|---|
+| Sin visitas | 0 | 0 | ≈ 0 USD (capa gratuita) |
+| 100 pestañas visibles, **antes** (2 mensajes en el muro) | 1.728.000 | 3.456.000 | ≈ 110 USD |
+| 100 pestañas visibles, **antes** (20 mensajes) | 1.728.000 | 34.560.000 | ≈ 390 USD |
+| 100 pestañas visibles, **después** (2 mensajes) | 1.728.000 | hasta 86.400 | ≈ 80 USD |
+| 100 pestañas visibles, **después** (20 mensajes) | 1.728.000 | hasta 864.000 | ≈ 87 USD |
+| 100 pestañas en segundo plano, **después** | ≈ 0 | ≈ 0 | ≈ 0 USD |
+
+*Supuestos:* 100 pestañas que consultan cada 5 s durante 24 h (17.280 peticiones por pestaña al día), una sola instancia del backend, unos 60 ms por petición (promedio medido con `hey`), y cada consulta lee un documento por mensaje devuelto (máximo 20). Precios de lista aproximados de `us-central1`, que conviene verificar en la calculadora de Google Cloud: 0,03 USD por cada 100.000 lecturas de Firestore, 0,40 USD por millón de peticiones de Cloud Run y 0,000024 y 0,0000025 USD por vCPU-segundo y GiB-segundo. Se descuentan las cuotas gratuitas de la guía (50.000 lecturas al día; 2 millones de peticiones, 180.000 vCPU-segundos y 360.000 GiB-segundos al mes). Es un orden de magnitud para ver qué cambia, no una cotización, y no se midió con la facturación real.
+
+*Qué dice la tabla:* antes del cambio, lo caro eran las lecturas de Firestore, y crecían con cada mensaje del muro. Después, con la copia de 2 s, las lecturas dejan de depender de cuántas personas miran y solo dependen del tiempo (como máximo una consulta cada 2 s por instancia). Lo que no cambia es el costo de Cloud Run mientras las pestañas estén visibles, porque cada una sigue haciendo una petición cada 5 s: ese cómputo (unas decenas de dólares al mes) pasa a ser lo principal. Y el mayor ahorro del cambio está en las pestañas olvidadas en segundo plano, que dejan de consultar por completo. Bajar más el costo con las pestañas visibles exigiría refrescar menos a menudo, lo que sacrifica el tiempo real, o cambiar la arquitectura a un canal de empuje, que queda fuera de este reto.
