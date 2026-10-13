@@ -512,4 +512,46 @@ https://pinoavila-frontend-1055375397627.us-central1.run.app
 
 **Alternativa descartada:** que el frontend haga de proxy y el navegador nunca hable con el backend. Elimina el CORS de raíz, pero obliga a reescribir `server.py` y la página para el mismo resultado.
 
+#### Cómo se reproduce todo desde cero
+
+**El problema:** los servicios de Cloud Run necesitan que sus imágenes ya existan, y las imágenes necesitan el registro, que crea Terraform. Un solo `terraform apply` intentaría crear los servicios antes de que haya algo que ejecutar, y Cloud Run falla con "imagen no encontrada". Terraform no puede ver esa dependencia, porque la imagen es un artefacto que produce Docker, no un recurso suyo.
+
+**El orden** (lo automatiza `scripts/levantar.sh`):
+
+| Paso | Qué ocurre | Por qué en este punto |
+|---|---|---|
+| 0 | `gcloud services enable cloudresourcemanager...` | Terraform necesita esa API para administrar las demás; no puede habilitarla él mismo. En este proyecto ya queda habilitada tras un `destroy`, pero en uno limpio es necesaria |
+| 1 | `terraform init` | Descarga el proveedor, fijado por `.terraform.lock.hcl` |
+| 2 | **Fase A:** `terraform apply -target` solo sobre las APIs y el registro | El registro es lo único que hace falta para poder subir imágenes |
+| 3 | `docker build` y `docker push` de las dos imágenes, con reintentos | Con el registro ya creado, las imágenes tienen dónde vivir |
+| 4 | **Fase B:** `terraform apply` completo | Base, cuentas de servicio, servicios y permisos. Ahora las imágenes existen |
+
+El script lee las rutas de las imágenes de `terraform.tfvars`, de modo que sube exactamente las etiquetas que los servicios van a usar.
+
+**Por qué `-target` aquí:** Terraform lo desaconseja como rutina, porque deja aplicar solo una parte y el estado puede quedar incompleto. Aquí es una excepción acotada y justificada: se usa una única vez por ejecución, sobre un conjunto fijo de recursos, y la fase B siempre cierra con un `apply` completo que reconcilia todo. Es seguro volver a ejecutar el script.
+
+**Cómo se ejecuta:**
+
+```bash
+terraform -chdir=infra plan -destroy     # revisar qué se va a borrar
+terraform -chdir=infra destroy           # borra todo, incluida la base y sus mensajes
+# esperar ~5 minutos: Firestore tarda en liberar el nombre de la base
+./scripts/levantar.sh
+```
+
+**Qué se pierde:** los mensajes y las reacciones (la base se borra, `deletion_policy = "DELETE"`) y las imágenes del registro, que el script vuelve a construir. Las URL del muro no cambian: la determinista depende del prefijo, la región y el número de proyecto.
+
+**Qué podría fallar:**
+
+- El nombre de la base no se ha liberado: la fase B falla y basta con esperar unos minutos y repetir.
+- El `docker push` se cae por la red (`connection refused` contra una IP de Google, un problema intermitente de Cloud Shell que ya se observó varias veces): por eso hay hasta 40 reintentos, y si se agotan el script imprime qué probar. Es seguro volver a ejecutarlo.
+- Se destruye sin haber subido el código al repositorio: sin el código no hay forma de reconstruir.
+- Se pierde el estado de Terraform (vive en el disco de Cloud Shell, no en el repositorio): `destroy` no sabría qué borrar.
+
+**Alternativas consideradas:**
+
+- Una imagen de relleno pública para que el primer `apply` funcione, y luego cambiar las etiquetas. Evita `-target`, pero deja un muro público sirviendo otra cosa mientras tanto.
+- Que Terraform construya las imágenes con `local-exec`. Un solo `apply`, pero contradice que Terraform declara dónde corre la aplicación y no la construye, y hace que `apply` dependa de Docker y de la red.
+- **Lo que se haría con más tiempo:** dividir `infra/` en dos carpetas, una con los cimientos (APIs, registro, base, cuentas) y otra con los servicios, y aplicarlas en orden con las imágenes en medio. Es la separación más limpia entre infraestructura y artefacto, y no usa `-target`, pero obliga a compartir valores entre dos estados y a reestructurar archivos que ya funcionan.
+
 ### Preguntas
