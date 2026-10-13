@@ -406,6 +406,40 @@ docker push $RUTA/frontend:v2
 cd infra && terraform apply
 ```
 
+#### Requisito 2: CORS restringido al frontend
+
+**6.3** Consola del navegador en otra página (`https://www.youtube.com`) intentando leer la API del backend con `fetch`. El navegador bloquea la respuesta con `blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present`. Nótese la última línea, `net::ERR_FAILED 200 (OK)`: el backend sí respondió con 200, pero el navegador descartó la respuesta. (La advertencia amarilla sobre `i.ytimg.com` es de la propia página de YouTube y no tiene relación.)
+
+![Evidencia 6.3](<Evidencias/Evidencia 6/Evidencia 6.3.png>)
+
+**6.4** El mismo comportamiento visto desde el servidor con `curl`: un origen no permitido no recibe ninguna cabecera CORS, y el origen del frontend recibe `access-control-allow-origin` con su propio valor.
+
+![Evidencia 6.4](<Evidencias/Evidencia 6/Evidencia 6.4.png>)
+
+```bash
+B=$(terraform -chdir=infra output -raw url_backend)
+curl -sI -H "Origin: https://malo.example" $B/mensajes | grep -i access-control
+curl -sI -H "Origin: https://pinoavila-frontend-q7vhrsuaoa-uc.a.run.app" $B/mensajes | grep -i access-control
+```
+
+```text
+# primer comando: sin salida (no hay cabeceras CORS)
+access-control-allow-origin: https://pinoavila-frontend-q7vhrsuaoa-uc.a.run.app
+access-control-allow-headers: Content-Type
+access-control-allow-methods: GET, POST
+```
+
+Comandos ejecutados para publicar `backend:v4` y `frontend:v3` (en `terraform.tfvars` cambiaron las etiquetas y se añadió `origen_frontend_alterno`):
+
+```bash
+RUTA=$(terraform -chdir=infra output -raw ruta_registro)
+docker build -t $RUTA/backend:v4 backend
+docker build -t $RUTA/frontend:v3 frontend
+docker push $RUTA/backend:v4
+docker push $RUTA/frontend:v3
+cd infra && terraform apply
+```
+
 ### Decisiones
 
 #### La funcionalidad nueva: reacciones
@@ -453,6 +487,19 @@ Para que el backend acepte peticiones de navegador solo desde el frontend, neces
 El backend (`app.py`) acepta una lista de orígenes separada por comas. Si el `Origin` de la petición está en la lista, lo devuelve en `Access-Control-Allow-Origin` (con `Vary: Origin`). Si no, no envía ninguna cabecera CORS y el navegador bloquea la respuesta. Sin la variable, queda `*`, para desarrollo local.
 
 **Por qué funciona:** la URL se calcula con datos conocidos de antemano, así que el backend deja de *depender* del frontend; solo necesita saber cómo se llamará.
+
+**Verificación del formato:** la URL calculada coincide con una de las URL reales del servicio, que Cloud Run lista en la anotación `run.googleapis.com/urls`:
+
+```bash
+terraform -chdir=infra output -raw origen_frontend; echo
+gcloud run services describe pinoavila-frontend --region us-central1 \
+  --format='value(metadata.annotations."run.googleapis.com/urls")'
+```
+
+```text
+https://pinoavila-frontend-1055375397627.us-central1.run.app
+["https://pinoavila-frontend-1055375397627.us-central1.run.app","https://pinoavila-frontend-q7vhrsuaoa-uc.a.run.app"]
+```
 
 **Qué la haría fallar:**
 
